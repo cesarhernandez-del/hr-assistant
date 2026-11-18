@@ -5,7 +5,9 @@
         "department": "Tecnología",
         "role": "Analista de datos",
         "start_date": "2019-03-04",
-        "status": "activo"
+        "status": "activo",
+        "phone": "55 2345 6789",
+        "rfc": "LOPA900315KJ2"
     },
     {
         "id": "EMP-0002",
@@ -13,7 +15,9 @@
         "department": "Ventas",
         "role": "Ejecutivo de cuenta",
         "start_date": "2021-07-19",
-        "status": "activo"
+        "status": "activo",
+        "phone": "81 3456 7890",
+        "rfc": "PELL880722MN4"
     },
     {
         "id": "EMP-0003",
@@ -21,7 +25,9 @@
         "department": "Tecnología",
         "role": "Desarrolladora",
         "start_date": "2016-11-02",
-        "status": "baja"
+        "status": "baja",
+        "phone": "33 4567 8901",
+        "rfc": "RUMM870210QR7"
     },
     {
         "id": "EMP-0004",
@@ -29,7 +35,9 @@
         "department": "Tecnología",
         "role": "Líder técnico",
         "start_date": "2022-01-10",
-        "status": "activo"
+        "status": "activo",
+        "phone": "55 1234 5678",
+        "rfc": "DIAJ850101AB1"
     },
     {
         "id": "EMP-0005",
@@ -37,6 +45,8 @@
         "department": "Finanzas",
         "role": "Contadora",
         "start_date": "2020-05-25",
-        "status": "activo"
+        "status": "activo",
+        "phone": "55 5678 9012",
+        "rfc": "GOMS920930ST9"
     }
 ]

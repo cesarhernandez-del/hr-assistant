@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -10,33 +11,45 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from app.agent import Agent
 from app.auth import authenticate
 from app.clock import SystemClock
 from app.config import Settings, check_compliance, load_settings
 from app.directory import Directory
 from app.gateway import GatewayBackend
-from app.llm import (
-    FakeBackend,
-    ModelBackend,
-    ModelUnavailable,
-    RequestModel,
-    TracedModel,
-)
+from app.llm import FakeBackend, ModelBackend, ModelUnavailable
 from app.logging_json import JsonLogger
 from app.metrics import Metrics
+from app.orchestrator import Orchestrator
 from app.pricing import Prices, load_prices
 from app.ratelimit import RateLimiter
-from app.router import choose_route, window_history
+from app.resilience import ResilientBackend
+from app.router import window_history
 from app.request_context import (
     bind_client,
     bind_request_id,
+    current_client,
     current_request_id,
     reset_request_id,
     resolve_request_id,
 )
 from app.tracing import build_tracer
 
+RESPONSE_FIELDS = (
+    "answer",
+    "steps",
+    "tools_used",
+    "input_tokens",
+    "output_tokens",
+    "stopped",
+    "model",
+    "route",
+    "cached_calls",
+    "cost_usd",
+    "intent",
+    "agents_used",
+    "pii_detected",
+    "fallback",
+)
 PRODUCT_ROOT = Path(__file__).resolve().parents[1]
 INDEX_PAGE = Path(__file__).resolve().parent / "static" / "index.html"
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -148,7 +161,8 @@ def _build_backend(settings: Settings, directory: Directory, model, backend):
         return ModelBackend(model)
     if settings.model_provider == "gateway":
         return GatewayBackend(settings, httpx.Client(timeout=30.0))
-    return FakeBackend(directory.departments())
+    fail_model = settings.model_large if settings.fake_fail_large else None
+    return FakeBackend(directory.departments(), fail_model)
 
 
 def create_app(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -161,6 +175,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     metrics=None,
     backend=None,
     limiter=None,
+    sleep=time.sleep,
 ) -> FastAPI:
     """Crea la aplicación con sus dependencias.
 
@@ -176,6 +191,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         el simulado o el del gateway según ``MODEL_PROVIDER``.
     :param limiter: Limitador con ``check(client)``; por omisión uno nuevo que usa
         ``RATE_LIMIT_PER_MINUTE`` y el reloj inyectado.
+    :param sleep: Función de espera del reintento ``sleep(segundos)``.
     :return: Aplicación FastAPI sin estado global entre instancias.
     :rtype: FastAPI
     """
@@ -187,6 +203,10 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     metrics = metrics or Metrics(settings.slo_p95_ms)
     tracer = build_tracer(settings, os.environ)
     prices = _load_prices(settings)
+    # Un modelo o backend inyectado solo se usa para probar el agente de
+    # directorio con respuestas preparadas (modo de las sesiones 1 a 4); el
+    # clasificador y el revisor corren cuando el backend lo arma la aplicación.
+    multiagent = model is None and backend is None
     backend = _build_backend(settings, directory, model, backend)
     limiter = limiter or RateLimiter(settings.rate_limit_per_minute, clock)
     application = FastAPI(title="HR Assistant")
@@ -240,21 +260,26 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
             [item.model_dump() for item in body.history or []],
             settings.history_window,
         )
-        model_name, route = choose_route(question, settings)
-        request_model = RequestModel(backend, model_name, prices)
-        agent = Agent(
-            TracedModel(request_model, tracer),
-            directory,
-            settings.agent_max_steps,
-            on_tool=lambda name, args: logger.emit(
-                "audit", action="tool_call", tool=name, args=args
+        resilient = ResilientBackend(
+            backend,
+            settings,
+            sleep,
+            on_fallback=lambda failed, kind: logger.emit(
+                "model_fallback", model=failed, error_type=kind
             ),
-            tracer=tracer,
+        )
+        orchestrator = Orchestrator(
+            settings, directory, resilient, prices, tracer, logger, multiagent
         )
         try:
-            result = tracer.traceable(name="agent_run")(agent.run)(question, history)
+            result = orchestrator.run(question, history)
         except ModelUnavailable as error:
-            logger.emit("error", error_type=type(error).__name__, model=model_name)
+            logger.emit(
+                "error",
+                error_type=type(error).__name__,
+                model=resilient.last_model,
+                kind=error.kind,
+            )
             return JSONResponse(
                 status_code=502,
                 content={
@@ -264,9 +289,9 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
             )
         logger.emit(
             "agent_run",
-            model=model_name,
-            route=route,
-            cost_usd=request_model.cost_usd,
+            model=result["model"],
+            route=result["route"],
+            cost_usd=result["cost_usd"],
             question_chars=len(question),
             history_messages=len(history),
             steps=result["steps"],
@@ -274,15 +299,26 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
             input_tokens=result["input_tokens"],
             output_tokens=result["output_tokens"],
             stopped=result["stopped"],
+            intent=result["intent"],
+            agents=result["agents_used"],
+            pii_types=result["pii_detected"],
+            fallback=result["fallback"],
+            reviewer_invalid=result["reviewer_invalid"],
         )
         metrics.record_tokens(result["input_tokens"], result["output_tokens"])
-        metrics.record_cost(request_model.cost_usd)
+        metrics.record_cost(result["cost_usd"])
+        metrics.record_answer(
+            intent=result["intent"],
+            pii_masked=bool(result["pii_detected"]),
+            injection_blocked=result["injection"] is not None,
+            fallback=result["fallback"],
+            client=current_client(),
+            cost_usd=result["cost_usd"],
+            model_calls=result["model_calls"],
+            cached_calls=result["cached_calls"],
+        )
         return {
-            **result,
-            "model": model_name,
-            "route": route,
-            "cached_calls": request_model.cached_calls,
-            "cost_usd": request_model.cost_usd,
+            **{k: v for k, v in result.items() if k in RESPONSE_FIELDS},
             "request_id": current_request_id(),
         }
 

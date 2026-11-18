@@ -29,6 +29,19 @@ SYSTEM_PROMPT = (
 )
 
 
+def _status_kind(status: int) -> str:
+    """Clasifica un código HTTP de error para decidir si se reintenta.
+
+    :param status: Código HTTP del gateway.
+    :type status: int
+    :return: ``429``, ``5xx`` o ``4xx``.
+    :rtype: str
+    """
+    if status == 429:
+        return "429"
+    return "5xx" if status >= 500 else "4xx"
+
+
 def extract_json(text: str) -> str:
     """Extrae el primer objeto JSON completo de un texto.
 
@@ -82,14 +95,24 @@ class GatewayBackend:  # pylint: disable=too-few-public-methods
         headers = {"Authorization": f"Bearer {settings.cf_api_token}"}
         if settings.cache_ttl_seconds > 0:
             headers["cf-aig-cache-ttl"] = str(settings.cache_ttl_seconds)
+        # El clasificador y el revisor traen su propio mensaje de sistema.
+        has_system = bool(messages) and messages[0].get("role") == "system"
+        sent = list(messages)
+        if not has_system:
+            sent.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
         body = {
             "model": model,
-            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+            "messages": sent,
             "max_tokens": settings.model_max_tokens,
             "temperature": settings.model_temperature,
         }
         try:
-            response = self._client.post(self._url, json=body, headers=headers)
+            response = self._client.post(
+                self._url,
+                json=body,
+                headers=headers,
+                timeout=settings.model_timeout_seconds,
+            )
             response.raise_for_status()
             data = response.json()
             return Completion(
@@ -99,6 +122,14 @@ class GatewayBackend:  # pylint: disable=too-few-public-methods
                 cached=response.headers.get("cf-aig-cache-status", "").upper()
                 == "HIT",
             )
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as err:
+        except httpx.TimeoutException as err:
+            raise ModelUnavailable(type(err).__name__, kind="timeout") from None
+        except httpx.HTTPStatusError as err:
+            raise ModelUnavailable(
+                type(err).__name__, kind=_status_kind(err.response.status_code)
+            ) from None
+        except httpx.HTTPError as err:
+            raise ModelUnavailable(type(err).__name__, kind="network") from None
+        except (ValueError, KeyError, IndexError, TypeError) as err:
             # No se incluye el mensaje original: podría traer la URL o el token.
-            raise ModelUnavailable(type(err).__name__) from None
+            raise ModelUnavailable(type(err).__name__, kind="invalid") from None

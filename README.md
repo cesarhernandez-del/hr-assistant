@@ -108,3 +108,45 @@ la pestaña) y la manda en `X-API-Key`. Muestra «Clave inválida» con `401` y
 | `RATE_LIMIT_PER_MINUTE` | `30` | Peticiones por cliente por minuto |
 
 `.env.example` lista todas las variables sin valores secretos.
+
+## Multiagente y datos personales (sesión 5)
+
+Cada pregunta pasa por tres agentes: `classifier` (decide `directory`, `out_of_scope` o
+`sensitive`), `directory` (el agente de las sesiones 1 a 4) y `reviewer` (comprueba la
+respuesta contra los resultados de las herramientas). `POST /ask` agrega `intent`,
+`agents_used`, `pii_detected` y `fallback`.
+
+Controles:
+
+- **PII:** `app/pii.py` enmascara por código (expresiones regulares) correo, teléfono,
+  CURP, RFC y tarjeta como `[EMAIL]`, `[PHONE]`, `[CURP]`, `[RFC]` y `[CARD]`, en la
+  pregunta antes de cualquier modelo, log o traza, y en la respuesta antes de
+  devolverla. La auditoría (`pii_masked`) y `pii_detected` llevan solo el tipo, nunca el
+  valor.
+- **Inyección de prompts:** `app/guard.py` bloquea, antes del clasificador, preguntas con
+  frases de una lista fija (sin distinguir mayúsculas ni acentos). Responde el mensaje
+  de `sensitive`, no llama a ningún modelo y la auditoría (`injection_blocked`) guarda
+  solo la frase que coincidió.
+- **Mínimo privilegio en los datos:** `get_employee` y `search_by_department` devuelven
+  solo `id`, `name`, `department`, `role`, `start_date` y `status`; `phone` y `rfc`
+  nunca llegan al modelo. Las preguntas sensibles se rechazan sin llamar herramientas.
+- **Revisor:** con `retry` el agente de directorio se relanza una sola vez; si el revisor
+  insiste, la respuesta es «No pude verificar la respuesta. Intenta con una pregunta más
+  concreta.». Una salida del revisor que no sea JSON válido se trata como `ok` y se
+  registra `reviewer_invalid`. Se apaga con `REVIEWER_ENABLED=false`. El clasificador
+  trata como `out_of_scope` cualquier salida inválida: el código valida, el modelo solo
+  propone.
+- **Resiliencia:** cada llamada al gateway tiene tope de `MODEL_TIMEOUT_SECONDS`; ante
+  timeout, error de red, `429` o `5xx` se reintenta una vez tras
+  `MODEL_RETRY_BACKOFF_SECONDS`; si el modelo grande sigue fallando se usa `MODEL_SMALL`
+  (`fallback: true`, evento `model_fallback`); si también falla, `502`.
+
+`/metrics` agrega `intents`, `pii_masked`, `injections_blocked`, `fallbacks`,
+`cache_hit_rate` y `cost_by_client` (por nombre de cliente, nunca por clave).
+
+| Variable | Por omisión | Para qué |
+| --- | --- | --- |
+| `REVIEWER_ENABLED` | `true` | Enciende el agente revisor |
+| `MODEL_TIMEOUT_SECONDS` | `20` | Tiempo máximo de cada llamada al gateway |
+| `MODEL_RETRY_BACKOFF_SECONDS` | `1` | Espera antes del único reintento |
+| `FAKE_FAIL_LARGE` | `false` | Solo con `fake`: hace fallar al modelo grande; ignorada en producción |

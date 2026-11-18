@@ -18,3 +18,24 @@ no arranca. El error junta todas las violaciones y nunca incluye el valor de una
 | El nombre del cliente va en el log, la auditoría y la traza | `app/request_context.py`, `app/logging_json.py`, `app/tracing.py` | Escenario «The client name reaches the log and the audit» |
 | La página guarda la clave solo en `sessionStorage` | `app/static/index.html` | `test_page_asks_for_the_key_and_keeps_it_only_in_session_storage` |
 | Los secretos no están en el repositorio ni en la imagen | `render.yaml` (`sync: false`), `.dockerignore`, `.env.example` sin valores | Pruebas de estructura de los archivos de publicación y revisión de `security` |
+
+## Controles de la sesión 5 (multiagente y datos personales)
+
+Los controles de PII e inyección son código determinista, no instrucciones a un modelo.
+
+| Regla | Dónde está en el código | Cómo se comprueba |
+| --- | --- | --- |
+| Correo, teléfono, CURP, RFC y tarjeta se enmascaran (`[EMAIL]`, `[PHONE]`, `[CURP]`, `[RFC]`, `[CARD]`) en la pregunta antes de cualquier modelo, log o traza | `app/pii.py` | Pruebas unitarias de PII y `test_contract_05.py` |
+| La respuesta se enmascara igual antes de devolverla; `pii_detected` lista solo tipos | `app/pii.py` y el flujo de `POST /ask` | Pruebas unitarias y de contrato |
+| Ningún valor de PII en el log, la auditoría, la traza ni `/metrics`; `pii_masked` lleva `where` y `types` | `app/pii.py`, `app/logging_json.py`, `app/tracing.py` | Escenarios de PII y revisión de `qa` |
+| Frases de inyección bloqueadas antes del clasificador, sin llamar a ningún modelo (costo cero); `injection_blocked` guarda solo la frase | `app/guard.py` | Pruebas unitarias del filtro y de contrato; cada frase nueva lleva su prueba |
+| Mínimo privilegio: las herramientas devuelven solo `id`, `name`, `department`, `role`, `start_date` y `status`; `phone` y `rfc` no llegan al modelo | Herramientas del agente de directorio en `app/` | Pruebas unitarias de las herramientas |
+| Preguntas `sensitive` y `out_of_scope` se responden con mensaje exacto y sin herramientas | Flujo del clasificador en `app/` | `test_contract_05.py` |
+| El clasificador valida su salida: cualquier JSON ajeno se trata como `out_of_scope` | Agente `classifier` en `app/` | Pruebas unitarias del clasificador |
+| El revisor valida la respuesta; un solo reintento y luego mensaje fijo; salida inválida cuenta como `ok` y se registra `reviewer_invalid` | Agente `reviewer` en `app/` | Pruebas unitarias y de contrato |
+| Resiliencia: timeout (`MODEL_TIMEOUT_SECONDS`), un reintento tras `MODEL_RETRY_BACKOFF_SECONDS` ante red, `429` o `5xx`, respaldo con `MODEL_SMALL` y `502` si también falla | Cliente del gateway en `app/` | Pruebas con `FAKE_FAIL_LARGE=true` y fallas simuladas |
+| `FAKE_FAIL_LARGE` solo existe con `MODEL_PROVIDER=fake`; en producción se ignora | `app/config.py` | Prueba de compliance en producción |
+| `/metrics` no expone claves ni PII; `cost_by_client` va por nombre de cliente | `app/metrics.py` | Pruebas de `/metrics` |
+
+Nota: la columna «Dónde está» nombra los módulos de la especificación; las rutas exactas
+de agentes y herramientas dentro de `app/` deben confirmarse en la revisión de `security`.
