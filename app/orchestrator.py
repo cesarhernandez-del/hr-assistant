@@ -20,6 +20,7 @@ UNVERIFIED_ANSWER = (
     "No pude verificar la respuesta. Intenta con una pregunta más concreta."
 )
 NO_DIRECTORY_ROUTE = "no_directory"
+REASON_MAX_CHARS = 200
 
 
 class Orchestrator:  # pylint: disable=too-many-instance-attributes
@@ -117,13 +118,20 @@ class Orchestrator:  # pylint: disable=too-many-instance-attributes
         :return: Veredicto validado por ``review``.
         :rtype: dict
         """
-        traced = self._tracer.traceable(name="reviewer")(review)
-        return traced(
-            TracedModel(model, self._tracer),
-            question,
-            result["answer"],
-            result["tool_results"],
-        )
+
+        def run_review() -> dict:
+            verdict = review(
+                TracedModel(model, self._tracer),
+                question,
+                result["answer"],
+                result["tool_results"],
+            )
+            verdict = {**verdict, "reason": _safe_reason(verdict["reason"])}
+            # Excepción declarada a HIDE_OUTPUTS: el motivo ya va enmascarado.
+            self._tracer.annotate(verdict=verdict["verdict"], reason=verdict["reason"])
+            return verdict
+
+        return self._tracer.traceable(name="reviewer")(run_review)()
 
     def _pipeline(  # pylint: disable=too-many-locals
         self, question: str, history: list
@@ -139,7 +147,13 @@ class Orchestrator:  # pylint: disable=too-many-instance-attributes
         :rtype: dict
         """
         small = self._settings.model_small
-        out = {"intent": "directory", "agents_used": [], "reviewer_invalid": False}
+        out = {
+            "intent": "directory",
+            "agents_used": [],
+            "reviewer_invalid": False,
+            "review_retries": 0,
+            "review_reason": "",
+        }
         if self._multiagent:
             classifier_model = TracedModel(self._request_model(small), self._tracer)
             out["intent"] = self._tracer.traceable(name="classifier")(classify)(
@@ -172,9 +186,11 @@ class Orchestrator:  # pylint: disable=too-many-instance-attributes
             out["reviewer_invalid"] = out["reviewer_invalid"] or verdict["invalid"]
             if verdict["verdict"] == "ok":
                 break
+            out["review_reason"] = verdict["reason"]
             if attempt == 1:
                 result = {**result, "answer": UNVERIFIED_ANSWER}
                 break
+            out["review_retries"] = 1
             asked = f"{question}\n\nMotivo de la revisión: {verdict['reason']}"
         extra = {"tools_used": tools, "model": model_name, "route": route}
         return {**result, **out, **extra}
@@ -187,8 +203,9 @@ class Orchestrator:  # pylint: disable=too-many-instance-attributes
         :param history: Mensajes previos enviados por el cliente.
         :type history: list or None
         :return: ``answer``, ``intent``, ``agents_used``, ``pii_detected``,
-            ``fallback``, ``cost_usd``, ``input_tokens``, ``output_tokens``,
-            ``cached_calls``, ``model_calls``, ``injection``, ``steps``,
+            ``fallback``, ``review_retries``, ``review_reason``, ``cost_usd``,
+            ``input_tokens``, ``output_tokens``, ``cached_calls``,
+            ``model_calls``, ``injection``, ``steps``,
             ``tools_used``, ``model``, ``route`` y ``stopped``.
         :rtype: dict
         :raises ModelUnavailable: Si el modelo y su respaldo fallan.
@@ -208,6 +225,8 @@ class Orchestrator:  # pylint: disable=too-many-instance-attributes
                 "intent": "sensitive",
                 "agents_used": [],
                 "reviewer_invalid": False,
+                "review_retries": 0,
+                "review_reason": "",
             }
         else:
             body = self._tracer.traceable(name="agent_run")(self._pipeline)(
@@ -228,6 +247,18 @@ class Orchestrator:  # pylint: disable=too-many-instance-attributes
             "cached_calls": sum(m.cached_calls for m in models),
             "model_calls": sum(m.calls for m in models),
         }
+
+
+def _safe_reason(reason: str) -> str:
+    """Enmascara el motivo del revisor y lo recorta a 200 caracteres.
+
+    :param reason: Motivo tal como lo dio el revisor.
+    :type reason: str
+    :return: Motivo sin datos personales y de a lo más 200 caracteres.
+    :rtype: str
+    """
+    masked, _ = pii.mask(reason)
+    return masked[:REASON_MAX_CHARS]
 
 
 def _idle(model_name: str) -> dict:

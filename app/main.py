@@ -49,6 +49,7 @@ RESPONSE_FIELDS = (
     "agents_used",
     "pii_detected",
     "fallback",
+    "review_retries",
 )
 PRODUCT_ROOT = Path(__file__).resolve().parents[1]
 INDEX_PAGE = Path(__file__).resolve().parent / "static" / "index.html"
@@ -124,7 +125,11 @@ def _install_middleware(application: FastAPI, clock, logger, metrics) -> None:
                 latency_ms=latency_ms,
                 **extra,
             )
-            metrics.record_request(latency_ms, response.status_code >= 500)
+            metrics.record_request(
+                latency_ms,
+                response.status_code >= 500,
+                ask=request.method == "POST" and request.url.path == "/ask",
+            )
             return response
         finally:
             reset_request_id(token)
@@ -162,7 +167,11 @@ def _build_backend(settings: Settings, directory: Directory, model, backend):
     if settings.model_provider == "gateway":
         return GatewayBackend(settings, httpx.Client(timeout=30.0))
     fail_model = settings.model_large if settings.fake_fail_large else None
-    return FakeBackend(directory.departments(), fail_model)
+    return FakeBackend(
+        directory.departments(),
+        fail_model,
+        reviewer_retry_once=settings.fake_reviewer_retry_once,
+    )
 
 
 def create_app(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -304,6 +313,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
             pii_types=result["pii_detected"],
             fallback=result["fallback"],
             reviewer_invalid=result["reviewer_invalid"],
+            review_retries=result["review_retries"],
+            review_reason=result["review_reason"],
         )
         metrics.record_tokens(result["input_tokens"], result["output_tokens"])
         metrics.record_cost(result["cost_usd"])

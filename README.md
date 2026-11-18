@@ -24,8 +24,8 @@ pytest --cov=app
 - `GET /`: página web; muestra el `request_id` de cada respuesta.
 - `GET /health`: estado del proceso.
 - `POST /ask`: recibe `question` e `history`; responde con `request_id`.
-- `GET /metrics`: `pid`, `requests`, `error_rate`, `latency_ms` (p50, p95),
-  `tokens` y `slo` de este proceso.
+- `GET /metrics`: `pid`, `requests`, `ask_requests`, `error_rate`, `latency_ms` (p50,
+  p95, solo de `POST /ask`), `tokens` y `slo` de este proceso.
 
 Toda respuesta trae el encabezado `X-Request-ID` (el del cliente si lo manda,
 o un UUID). Un fallo interno responde `500` con
@@ -141,8 +141,25 @@ Controles:
   `MODEL_RETRY_BACKOFF_SECONDS`; si el modelo grande sigue fallando se usa `MODEL_SMALL`
   (`fallback: true`, evento `model_fallback`); si también falla, `502`.
 
+- **Motivo del revisor registrado:** `POST /ask` y el evento `agent_run` llevan
+  `review_retries` (0 o 1); `agent_run` agrega `review_reason`, el motivo enmascarado con
+  `app/pii.py` y recortado a 200 caracteres (vacío si aprobó a la primera). El tramo
+  `reviewer` de LangSmith agrega `verdict` y `reason` a sus metadatos, con la misma
+  máscara y recorte. Es una excepción declarada a `HIDE_OUTPUTS`: el motivo describe la
+  respuesta, no repite la pregunta ni datos privados.
+- **SLO medido solo sobre `/ask`:** el balanceador consulta `/health` cada pocos segundos
+  y esas peticiones de un milisegundo esconden la latencia real de las preguntas.
+
 `/metrics` agrega `intents`, `pii_masked`, `injections_blocked`, `fallbacks`,
 `cache_hit_rate` y `cost_by_client` (por nombre de cliente, nunca por clave).
+
+### Cambio de significado de `latency_ms`
+
+Desde esta sesión `latency_ms` (`p50` y `p95`) y `slo` de `/metrics` se calculan **solo
+con `POST /ask`**; antes contaban todas las peticiones. `/metrics` agrega `ask_requests`,
+el número de peticiones a `POST /ask` que entran en ese cálculo. `requests` y
+`error_rate` siguen contando todas las peticiones, como en la sesión 2. Quien compare
+latencias anteriores con las nuevas debe tener en cuenta este cambio.
 
 | Variable | Por omisión | Para qué |
 | --- | --- | --- |
@@ -150,3 +167,4 @@ Controles:
 | `MODEL_TIMEOUT_SECONDS` | `20` | Tiempo máximo de cada llamada al gateway |
 | `MODEL_RETRY_BACKOFF_SECONDS` | `1` | Espera antes del único reintento |
 | `FAKE_FAIL_LARGE` | `false` | Solo con `fake`: hace fallar al modelo grande; ignorada en producción |
+| `FAKE_REVIEWER_RETRY_ONCE` | `false` | Solo con `fake`: el revisor pide una corrección por pregunta |
