@@ -75,15 +75,16 @@ class Agent:
         :type question: str
         :param history: Mensajes previos enviados por el cliente.
         :type history: list or None
-        :return: ``answer``, ``steps``, ``tools_used``, ``input_tokens``,
-            ``output_tokens`` y ``stopped`` (``answer``, ``max_steps`` o
-            ``invalid``).
+        :return: ``answer``, ``steps``, ``tools_used``, ``tool_results``,
+            ``input_tokens``, ``output_tokens`` y ``stopped`` (``answer``,
+            ``max_steps`` o ``invalid``).
         :rtype: dict
         """
         messages = [dict(m) for m in (history or [])]
         messages.append({"role": "user", "content": question})
         start = self._tokens()
         tools_used: List[str] = []
+        tool_results: List[str] = []
         steps = 0
         answer = LIMIT_ANSWER
         stopped = "max_steps"
@@ -109,6 +110,7 @@ class Agent:
                 if self._on_tool is not None:
                     self._on_tool(name, args)
                 result = self._execute(name, args)
+                tool_results.append(result)
             else:
                 result = f"Herramienta desconocida: {name}."
             messages.append({"role": "user", "content": TOOL_RESULT_PREFIX + result})
@@ -117,6 +119,7 @@ class Agent:
             "answer": answer,
             "steps": steps,
             "tools_used": tools_used,
+            "tool_results": tool_results,
             "input_tokens": end[0] - start[0],
             "output_tokens": end[1] - start[1],
             "stopped": stopped,

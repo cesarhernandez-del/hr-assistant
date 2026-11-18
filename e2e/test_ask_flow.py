@@ -26,11 +26,11 @@ def test_user_sees_the_answer_with_a_request_id_after_sending_a_question(page: P
     )
 
 
-def test_question_is_shown_in_the_conversation(page: Page):
+def test_out_of_scope_question_shows_the_exact_refusal_message(page: Page):
     open_page_with_key(page)
-    ask(page, "Tell me about the sales department")
+    ask(page, "What is the capital of France?")
     expect(page.get_by_test_id("answer")).to_contain_text(
-        "Tell me about the sales department"
+        "Solo puedo responder preguntas sobre el directorio de empleados."
     )
 
 

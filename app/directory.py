@@ -5,8 +5,24 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+PUBLIC_FIELDS = ("id", "name", "department", "role", "start_date", "status")
+
+
+def _public(employee: dict) -> Dict:
+    """Deja solo los campos públicos (lista blanca) de un empleado.
+
+    :param employee: Empleado con todos sus campos.
+    :type employee: dict
+    :return: Copia con ``PUBLIC_FIELDS`` únicamente.
+    :rtype: dict
+    """
+    return {name: employee[name] for name in PUBLIC_FIELDS if name in employee}
+
+
 class Directory:
     """Consulta empleados cargados en memoria.
+
+    Las herramientas solo devuelven los campos públicos (mínimo privilegio).
 
     :param employees: Lista de empleados (diccionarios).
     :type employees: list
@@ -45,7 +61,7 @@ class Directory:
         """
         for employee in self._employees:
             if employee["id"] == employee_id:
-                return dict(employee)
+                return _public(employee)
         return None
 
     def search_by_department(self, department: str) -> List[Dict]:
@@ -58,5 +74,7 @@ class Directory:
         """
         wanted = department.casefold()
         return [
-            dict(e) for e in self._employees if e["department"].casefold() == wanted
+            _public(e)
+            for e in self._employees
+            if e["department"].casefold() == wanted
         ]

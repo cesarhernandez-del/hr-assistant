@@ -3,7 +3,7 @@
 import math
 import threading
 from collections import deque
-from typing import Deque, List
+from typing import Deque, Dict, List, Optional
 
 WINDOW_SIZE = 1000
 
@@ -39,7 +39,58 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._intents = {"directory": 0, "out_of_scope": 0, "sensitive": 0}
+        self._pii_masked = 0
+        self._injections_blocked = 0
+        self._fallbacks = 0
+        self._model_calls = 0
+        self._cached_calls = 0
+        self._cost_by_client: Dict[str, float] = {}
         self._lock = threading.Lock()
+
+    def record_answer(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        intent: str,
+        pii_masked: bool,
+        injection_blocked: bool,
+        fallback: bool,
+        client: Optional[str],
+        cost_usd: float,
+        model_calls: int,
+        cached_calls: int,
+    ) -> None:
+        """Suma las métricas de negocio de una respuesta.
+
+        :param intent: Intención decidida (``directory``, ``out_of_scope`` o
+            ``sensitive``).
+        :type intent: str
+        :param pii_masked: Si se enmascaró algún dato personal.
+        :type pii_masked: bool
+        :param injection_blocked: Si el filtro bloqueó la pregunta.
+        :type injection_blocked: bool
+        :param fallback: Si se usó el modelo de respaldo.
+        :type fallback: bool
+        :param client: Nombre del cliente (nunca su clave), o ``None``.
+        :type client: str or None
+        :param cost_usd: Costo de la respuesta en USD.
+        :type cost_usd: float
+        :param model_calls: Llamadas al modelo de la respuesta.
+        :type model_calls: int
+        :param cached_calls: Llamadas que vinieron de la caché.
+        :type cached_calls: int
+        """
+        with self._lock:
+            self._intents[intent] = self._intents.get(intent, 0) + 1
+            self._pii_masked += 1 if pii_masked else 0
+            self._injections_blocked += 1 if injection_blocked else 0
+            self._fallbacks += 1 if fallback else 0
+            self._model_calls += model_calls
+            self._cached_calls += cached_calls
+            if client is not None:
+                self._cost_by_client[client] = (
+                    self._cost_by_client.get(client, 0.0) + cost_usd
+                )
 
     def record_request(self, latency_ms: float, failed: bool) -> None:
         """Registra una petición terminada.
@@ -88,8 +139,19 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
             errors = self._errors
             tokens = {"input": self._input_tokens, "output": self._output_tokens}
             cost_usd = self._cost_usd
+            business = {
+                "intents": dict(self._intents),
+                "pii_masked": self._pii_masked,
+                "injections_blocked": self._injections_blocked,
+                "fallbacks": self._fallbacks,
+                "cache_hit_rate": (
+                    self._cached_calls / self._model_calls if self._model_calls else 0
+                ),
+                "cost_by_client": dict(self._cost_by_client),
+            }
         p95 = _percentile(samples, 0.95)
         return {
+            **business,
             "requests": requests,
             "error_rate": errors / requests if requests else 0,
             "latency_ms": {"p50": _percentile(samples, 0.5), "p95": p95},

@@ -3,11 +3,26 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Protocol
+from typing import Dict, List, Optional, Protocol
+
+from app.classifier import CLASSIFIER_SYSTEM
+from app.guard import normalize
+from app.reviewer import REVIEWER_SYSTEM
 
 TOOL_RESULT_PREFIX = "Resultado de la herramienta: "
 FALLBACK_ANSWER = "Pregúntame por un empleado (EMP-0001) o un departamento."
 _EMPLOYEE_ID = re.compile(r"EMP-\d{4}")
+# Se comparan sin acentos ni mayúsculas. «cuenta» sola no basta: es un puesto.
+_SENSITIVE_WORDS = (
+    "salario",
+    "sueldo",
+    "telefono",
+    "domicilio",
+    "rfc",
+    "curp",
+    "cuenta bancaria",
+    "desempeno",
+)
 
 
 class Model(Protocol):  # pylint: disable=too-few-public-methods
@@ -24,7 +39,16 @@ class Model(Protocol):  # pylint: disable=too-few-public-methods
 
 
 class ModelUnavailable(Exception):
-    """El modelo no respondió o su respuesta no se pudo usar."""
+    """El modelo no respondió o su respuesta no se pudo usar.
+
+    :param message: Texto corto sin datos sensibles.
+    :param kind: Tipo de falla: ``timeout``, ``network``, ``429``, ``5xx``,
+        ``4xx`` o ``invalid``. Define si se reintenta.
+    """
+
+    def __init__(self, message: str = "", kind: str = "invalid"):
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -35,12 +59,14 @@ class Completion:
     :param input_tokens: Tokens de entrada de esta llamada.
     :param output_tokens: Tokens de salida de esta llamada.
     :param cached: Si el gateway respondió desde su caché.
+    :param model: Modelo que respondió de verdad (vacío si es el pedido).
     """
 
     text: str
     input_tokens: int
     output_tokens: int
     cached: bool = False
+    model: str = ""
 
 
 class ModelBackend:  # pylint: disable=too-few-public-methods
@@ -75,7 +101,7 @@ class ModelBackend:  # pylint: disable=too-few-public-methods
         )
 
 
-class RequestModel:
+class RequestModel:  # pylint: disable=too-many-instance-attributes
     """Modelo de una sola petición: mide tokens, caché y costo.
 
     :param backend: Objeto con ``complete(model, messages)``.
@@ -91,10 +117,13 @@ class RequestModel:
         self.input_tokens = 0
         self.output_tokens = 0
         self.cached_calls = 0
+        self.calls = 0
         self.cost_usd = 0.0
 
     def complete(self, messages: List[Dict[str, str]]) -> str:
         """Llama al backend y acumula tokens y costo (las cacheadas no cuestan).
+
+        El costo usa el modelo que respondió, que puede ser el de respaldo.
 
         :param messages: Conversación completa.
         :type messages: list
@@ -102,13 +131,14 @@ class RequestModel:
         :rtype: str
         """
         result = self._backend.complete(self._model, messages)
+        self.calls += 1
         self.input_tokens += result.input_tokens
         self.output_tokens += result.output_tokens
         if result.cached:
             self.cached_calls += 1
         else:
             self.cost_usd += self._prices.cost(
-                self._model, result.input_tokens, result.output_tokens
+                result.model or self._model, result.input_tokens, result.output_tokens
             )
         return result.text
 
@@ -118,10 +148,14 @@ class FakeBackend:  # pylint: disable=too-few-public-methods
 
     :param departments: Departamentos que el modelo simulado reconoce.
     :type departments: list
+    :param fail_model: Nombre del modelo que siempre falla (para probar el
+        respaldo sin red), o ``None``.
+    :type fail_model: str or None
     """
 
-    def __init__(self, departments: List[str]):
+    def __init__(self, departments: List[str], fail_model: Optional[str] = None):
         self._departments = list(departments)
+        self._fail_model = fail_model
 
     def complete(self, model: str, messages: List[Dict[str, str]]) -> Completion:
         """Responde de forma determinista; el nombre solo define el precio.
@@ -132,8 +166,10 @@ class FakeBackend:  # pylint: disable=too-few-public-methods
         :type messages: list
         :return: Texto y tokens aproximados de esta llamada.
         :rtype: Completion
+        :raises ModelUnavailable: Si ``model`` es el que debe fallar.
         """
-        del model
+        if self._fail_model is not None and model == self._fail_model:
+            raise ModelUnavailable("simulated failure", kind="5xx")
         return ModelBackend(FakeModel(self._departments)).complete("", messages)
 
 
@@ -196,8 +232,45 @@ class FakeModel:
                 }
         return {"answer": FALLBACK_ANSWER}
 
+    def _classify(self, question: str) -> dict:
+        """Clasifica la pregunta con las reglas del modelo simulado.
+
+        :param question: Pregunta enmascarada.
+        :type question: str
+        :return: ``{"intent": ...}``.
+        :rtype: dict
+        """
+        lowered = normalize(question)
+        if any(word in lowered for word in _SENSITIVE_WORDS):
+            return {"intent": "sensitive"}
+        if _EMPLOYEE_ID.search(question):
+            return {"intent": "directory"}
+        if any(normalize(d) in lowered for d in self._departments):
+            return {"intent": "directory"}
+        return {"intent": "out_of_scope"}
+
+    @staticmethod
+    def _review(content: str) -> dict:
+        """Revisa una respuesta: ``ok`` salvo que esté vacía.
+
+        :param content: JSON con ``question``, ``answer`` y ``tool_results``.
+        :type content: str
+        :return: ``{"verdict": ...}``.
+        :rtype: dict
+        """
+        try:
+            answer = str(json.loads(content).get("answer", ""))
+        except (json.JSONDecodeError, AttributeError):
+            answer = ""
+        if not answer.strip():
+            return {"verdict": "retry", "reason": "empty answer"}
+        return {"verdict": "ok"}
+
     def complete(self, messages: List[Dict[str, str]]) -> str:
         """Responde de forma determinista y cuenta tokens aproximados.
+
+        Si el primer mensaje es el de sistema del clasificador o del revisor,
+        responde como ellos; si no, como el agente de directorio.
 
         :param messages: Conversación completa.
         :type messages: list
@@ -205,7 +278,14 @@ class FakeModel:
         :rtype: str
         """
         self.input_tokens += sum(len(m["content"].split()) for m in messages)
-        decision = self._decide(messages[-1]["content"] if messages else "")
+        last = messages[-1]["content"] if messages else ""
+        system = messages[0]["content"] if messages else ""
+        if system == CLASSIFIER_SYSTEM:
+            decision = self._classify(last)
+        elif system == REVIEWER_SYSTEM:
+            decision = self._review(last)
+        else:
+            decision = self._decide(last)
         reply_text = decision.get("answer") or json.dumps(
             decision, ensure_ascii=False
         )

@@ -53,6 +53,41 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     environment: str = "development"
     api_keys: Dict[str, str] = field(default_factory=dict, repr=False)
     rate_limit_per_minute: int = 30
+    reviewer_enabled: bool = True
+    model_timeout_seconds: float = 20
+    model_retry_backoff_seconds: float = 1
+    fake_fail_large: bool = False
+
+
+def _number(env: Mapping[str, str], name: str, default: float, minimum: float,
+            inclusive: bool) -> float:
+    """Lee un número de ``env`` con un mínimo.
+
+    :param env: Variables de entorno.
+    :type env: Mapping[str, str]
+    :param name: Nombre de la variable.
+    :type name: str
+    :param default: Valor por omisión.
+    :type default: float
+    :param minimum: Cota inferior.
+    :type minimum: float
+    :param inclusive: Si la cota inferior es un valor permitido.
+    :type inclusive: bool
+    :return: El número leído.
+    :rtype: float
+    :raises ConfigError: Si no es un número o queda fuera del rango.
+    """
+    raw = env.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from error
+    if value < minimum or (value == minimum and not inclusive):
+        bound = "at least" if inclusive else "greater than"
+        raise ConfigError(f"{name} must be {bound} {minimum:g}, got {value:g}")
+    return value
 
 
 def _non_negative_int(env: Mapping[str, str], name: str, default: int) -> int:
@@ -250,6 +285,13 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         langsmith_tracing=_boolean(env, "LANGSMITH_TRACING", False),
         hide_inputs=_boolean(env, "HIDE_INPUTS", True),
         hide_outputs=_boolean(env, "HIDE_OUTPUTS", True),
+        reviewer_enabled=_boolean(env, "REVIEWER_ENABLED", True),
+        model_timeout_seconds=_number(env, "MODEL_TIMEOUT_SECONDS", 20, 0, False),
+        model_retry_backoff_seconds=_number(
+            env, "MODEL_RETRY_BACKOFF_SECONDS", 1, 0, True
+        ),
+        # Solo existe con el modelo simulado; con otro proveedor se ignora.
+        fake_fail_large=provider == "fake" and _boolean(env, "FAKE_FAIL_LARGE", False),
     )
     _require_gateway_values(settings)
     return settings
