@@ -2,6 +2,7 @@
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Protocol
 
@@ -11,7 +12,8 @@ from app.reviewer import REVIEWER_SYSTEM
 
 TOOL_RESULT_PREFIX = "Resultado de la herramienta: "
 FALLBACK_ANSWER = "Pregúntame por un empleado (EMP-0001) o un departamento."
-_EMPLOYEE_ID = re.compile(r"EMP-\d{4}")
+RETRY_REASON = "Falta el puesto del empleado."
+_EMPLOYEE_ID =re.compile(r"EMP-\d{4}")
 # Se comparan sin acentos ni mayúsculas. «cuenta» sola no basta: es un puesto.
 _SENSITIVE_WORDS = (
     "salario",
@@ -151,11 +153,56 @@ class FakeBackend:  # pylint: disable=too-few-public-methods
     :param fail_model: Nombre del modelo que siempre falla (para probar el
         respaldo sin red), o ``None``.
     :type fail_model: str or None
+    :param reviewer_retry_once: Si el revisor pide una corrección la primera
+        vez de cada pregunta y aprueba la segunda.
+    :type reviewer_retry_once: bool
     """
 
-    def __init__(self, departments: List[str], fail_model: Optional[str] = None):
+    def __init__(
+        self,
+        departments: List[str],
+        fail_model: Optional[str] = None,
+        reviewer_retry_once: bool = False,
+    ):
         self._departments = list(departments)
         self._fail_model = fail_model
+        self._reviewer_retry_once = reviewer_retry_once
+        # Preguntas a las que ya se les pidió una corrección; se olvidan al
+        # aprobarse, así cada pregunta nueva vuelve a pedirla.
+        self._pending_retry: set = set()
+        self._lock = threading.Lock()
+
+    def _retry_once(self, messages: List[Dict[str, str]]) -> Optional[Completion]:
+        """Decide el veredicto del revisor cuando pide una corrección por pregunta.
+
+        :param messages: Conversación del revisor.
+        :type messages: list
+        :return: El veredicto, o ``None`` si no aplica (respuesta vacía u otro
+            agente) y debe decidir el modelo simulado.
+        :rtype: Completion or None
+        """
+        if not self._reviewer_retry_once or messages[0]["content"] != REVIEWER_SYSTEM:
+            return None
+        try:
+            payload = json.loads(messages[-1]["content"])
+            question = str(payload.get("question", ""))
+            answer = str(payload.get("answer", ""))
+        except (json.JSONDecodeError, AttributeError):
+            return None
+        if not answer.strip():
+            return None
+        with self._lock:
+            first_time = question not in self._pending_retry
+            if first_time:
+                self._pending_retry.add(question)
+            else:
+                self._pending_retry.discard(question)
+        verdict = {"verdict": "ok"}
+        if first_time:
+            verdict = {"verdict": "retry", "reason": RETRY_REASON}
+        text = json.dumps(verdict, ensure_ascii=False)
+        tokens_in = sum(len(m["content"].split()) for m in messages)
+        return Completion(text, tokens_in, len(text.split()))
 
     def complete(self, model: str, messages: List[Dict[str, str]]) -> Completion:
         """Responde de forma determinista; el nombre solo define el precio.
@@ -170,6 +217,9 @@ class FakeBackend:  # pylint: disable=too-few-public-methods
         """
         if self._fail_model is not None and model == self._fail_model:
             raise ModelUnavailable("simulated failure", kind="5xx")
+        scripted = self._retry_once(messages)
+        if scripted is not None:
+            return scripted
         return ModelBackend(FakeModel(self._departments)).complete("", messages)
 
 

@@ -138,6 +138,28 @@ class Observed:
         return [e for e in parsed if name is None or e["event"] == name]
 
 
+def build_observed(settings, directory, clock, **app_kwargs):
+    """Arma la app con logger y metricas inyectados y devuelve un ``Observed``.
+
+    ``app_kwargs`` se pasa tal cual a ``create_app`` (``model``, ``backend``).
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.logging_json import JsonLogger
+    from app.metrics import Metrics
+
+    stream = io.StringIO()
+    app = create_app(
+        settings=settings,
+        directory=directory,
+        clock=clock,
+        logger=JsonLogger(settings.service_name, clock, stream),
+        metrics=Metrics(settings.slo_p95_ms),
+        **app_kwargs,
+    )
+    client = TestClient(app, raise_server_exceptions=False, headers=KEY_HEADERS)
+    return Observed(client, stream, clock)
+
+
 @pytest.fixture(name="make_observed")
 def make_observed_factory(directory):
     """Fabrica de aplicaciones con reloj, logger y metricas inyectados.
@@ -148,23 +170,13 @@ def make_observed_factory(directory):
     """
 
     def build(model=None, step_seconds=0.25, env=None):
-        # pylint: disable=import-outside-toplevel
-        from app.logging_json import JsonLogger
-        from app.metrics import Metrics
-
         settings = load_settings({**KEY_ENV, **(env or {})})
-        clock = FakeClock(step_seconds)
-        stream = io.StringIO()
-        app = create_app(
-            settings=settings,
+        return build_observed(
+            settings,
+            directory,
+            FakeClock(step_seconds),
             model=model or FakeModel(DEPARTMENTS),
-            directory=directory,
-            clock=clock,
-            logger=JsonLogger(settings.service_name, clock, stream),
-            metrics=Metrics(settings.slo_p95_ms),
         )
-        client = TestClient(app, raise_server_exceptions=False, headers=KEY_HEADERS)
-        return Observed(client, stream)
 
     return build
 
@@ -283,26 +295,13 @@ def make_costed_factory(directory, prices_file):
     def build(env=None, stub=None):
         # pylint: disable=import-outside-toplevel
         from app.gateway import GatewayBackend
-        from app.logging_json import JsonLogger
-        from app.metrics import Metrics
 
         base = GATEWAY_ENV if stub else {}
         settings = load_settings(
             {**KEY_ENV, **base, "PRICES_PATH": str(prices_file), **(env or {})}
         )
-        clock = FakeClock()
-        stream = io.StringIO()
         backend = GatewayBackend(settings, stub.client()) if stub else None
-        app = create_app(
-            settings=settings,
-            directory=directory,
-            clock=clock,
-            logger=JsonLogger(settings.service_name, clock, stream),
-            metrics=Metrics(settings.slo_p95_ms),
-            backend=backend,
-        )
-        client = TestClient(app, raise_server_exceptions=False, headers=KEY_HEADERS)
-        return Observed(client, stream)
+        return build_observed(settings, directory, FakeClock(), backend=backend)
 
     return build
 

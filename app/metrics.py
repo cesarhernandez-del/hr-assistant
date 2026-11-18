@@ -36,6 +36,7 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
         self._latencies: Deque[float] = deque(maxlen=WINDOW_SIZE)
         self._requests = 0
         self._errors = 0
+        self._ask_requests = 0
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
@@ -92,18 +93,27 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
                     self._cost_by_client.get(client, 0.0) + cost_usd
                 )
 
-    def record_request(self, latency_ms: float, failed: bool) -> None:
+    def record_request(
+        self, latency_ms: float, failed: bool, ask: bool = True
+    ) -> None:
         """Registra una petición terminada.
+
+        Todas cuentan para ``requests`` y ``error_rate``; solo las de
+        ``POST /ask`` entran en la latencia y el SLO.
 
         :param latency_ms: Latencia en milisegundos.
         :type latency_ms: float
         :param failed: Si terminó con error del servidor.
         :type failed: bool
+        :param ask: Si la petición fue ``POST /ask``.
+        :type ask: bool
         """
         with self._lock:
             self._requests += 1
             self._errors += 1 if failed else 0
-            self._latencies.append(latency_ms)
+            if ask:
+                self._latencies.append(latency_ms)
+                self._ask_requests += 1
 
     def record_tokens(self, input_tokens: int, output_tokens: int) -> None:
         """Suma los tokens de una corrida del agente.
@@ -129,14 +139,15 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
     def snapshot(self) -> dict:
         """Resume el estado actual.
 
-        :return: ``requests``, ``error_rate``, ``latency_ms``, ``tokens`` y
-            ``slo``.
+        :return: ``requests``, ``ask_requests``, ``error_rate``, ``latency_ms``
+            (solo ``POST /ask``), ``tokens`` y ``slo``.
         :rtype: dict
         """
         with self._lock:
             samples = sorted(self._latencies)
             requests = self._requests
             errors = self._errors
+            ask_requests = self._ask_requests
             tokens = {"input": self._input_tokens, "output": self._output_tokens}
             cost_usd = self._cost_usd
             business = {
@@ -153,6 +164,7 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
         return {
             **business,
             "requests": requests,
+            "ask_requests": ask_requests,
             "error_rate": errors / requests if requests else 0,
             "latency_ms": {"p50": _percentile(samples, 0.5), "p95": p95},
             "tokens": tokens,

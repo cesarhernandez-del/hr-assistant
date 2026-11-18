@@ -57,6 +57,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     model_timeout_seconds: float = 20
     model_retry_backoff_seconds: float = 1
     fake_fail_large: bool = False
+    fake_reviewer_retry_once: bool = False
 
 
 def _number(env: Mapping[str, str], name: str, default: float, minimum: float,
@@ -292,6 +293,8 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         ),
         # Solo existe con el modelo simulado; con otro proveedor se ignora.
         fake_fail_large=provider == "fake" and _boolean(env, "FAKE_FAIL_LARGE", False),
+        fake_reviewer_retry_once=provider == "fake"
+        and _boolean(env, "FAKE_REVIEWER_RETRY_ONCE", False),
     )
     _require_gateway_values(settings)
     return settings

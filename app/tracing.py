@@ -27,6 +27,24 @@ class Tracer:
         self._hide_inputs = hide_inputs
         self._hide_outputs = hide_outputs
 
+    def annotate(self, **metadata) -> None:
+        """Agrega metadatos al tramo en curso, aun con ``HIDE_OUTPUTS``.
+
+        Es la excepción declarada para el motivo del revisor: el llamador
+        pasa valores ya enmascarados y recortados. No hace nada si las trazas
+        están apagadas o no hay un tramo activo.
+
+        :param metadata: Pares nombre y valor para los metadatos del tramo.
+        """
+        if not self.enabled:
+            return
+        # pylint: disable-next=import-outside-toplevel
+        from langsmith.run_helpers import get_current_run_tree
+
+        run = get_current_run_tree()
+        if run is not None:
+            run.add_metadata(metadata)
+
     def traceable(self, name: str, run_type: str = "chain") -> Callable:
         """Devuelve un decorador que traza la función con ``request_id``.
 

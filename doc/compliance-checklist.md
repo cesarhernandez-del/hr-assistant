@@ -36,6 +36,23 @@ Los controles de PII e inyección son código determinista, no instrucciones a u
 | Resiliencia: timeout (`MODEL_TIMEOUT_SECONDS`), un reintento tras `MODEL_RETRY_BACKOFF_SECONDS` ante red, `429` o `5xx`, respaldo con `MODEL_SMALL` y `502` si también falla | Cliente del gateway en `app/` | Pruebas con `FAKE_FAIL_LARGE=true` y fallas simuladas |
 | `FAKE_FAIL_LARGE` solo existe con `MODEL_PROVIDER=fake`; en producción se ignora | `app/config.py` | Prueba de compliance en producción |
 | `/metrics` no expone claves ni PII; `cost_by_client` va por nombre de cliente | `app/metrics.py` | Pruebas de `/metrics` |
+| `FAKE_REVIEWER_RETRY_ONCE` solo existe con `MODEL_PROVIDER=fake` | `app/config.py`, `app/llm.py` | Pruebas de configuración y del revisor simulado |
+| El motivo del revisor queda registrado: `review_retries` en la respuesta y en `agent_run`; `review_reason` enmascarado con `app/pii.py` y recortado a 200 caracteres | `app/orchestrator.py` (`_safe_reason`) | Pruebas unitarias del orquestador y de contrato |
+| El tramo `reviewer` de LangSmith lleva `verdict` y `reason` (enmascarado y recortado); excepción declarada a `HIDE_OUTPUTS`, porque el motivo describe la respuesta y no repite pregunta ni datos privados | `app/orchestrator.py`, `app/tracing.py` | Pruebas de metadatos de la traza |
+| `latency_ms` y `slo` se calculan solo con `POST /ask`; `ask_requests` cuenta esas peticiones; `requests` y `error_rate` cuentan todas | `Metrics.record_request` en `app/metrics.py` | Pruebas de `/metrics` (con `/health` de por medio la latencia no baja) |
 
-Nota: la columna «Dónde está» nombra los módulos de la especificación; las rutas exactas
-de agentes y herramientas dentro de `app/` deben confirmarse en la revisión de `security`.
+## Verificación por control (sesión 5)
+
+Resumen de cada control del reto y qué evidencia lo respalda.
+
+| Control | Qué garantiza | Evidencia |
+| --- | --- | --- |
+| PII | Ningún dato personal llega a un modelo, al log, a la auditoría, a la traza ni a `/metrics`; solo su tipo | `app/pii.py`, `pii_detected`, evento `pii_masked` |
+| Inyección | Frases de lista fija bloqueadas en código antes de cualquier modelo; costo cero | `app/guard.py`, evento `injection_blocked` (solo la frase) |
+| Mínimo privilegio | `phone` y `rfc` existen en los datos pero las herramientas solo entregan campos públicos | `app/directory.py`, pruebas de herramientas |
+| Revisor y su motivo | Un reintento como máximo; el motivo queda en `agent_run` y en la traza, sin PII y de a lo más 200 caracteres | `app/reviewer.py`, `app/orchestrator.py`, `review_reason` |
+| Resiliencia | Tope de tiempo, un reintento, respaldo con `MODEL_SMALL`, `502` si también falla | `app/resilience.py`, `app/gateway.py`, evento `model_fallback` |
+| SLO sobre `/ask` | La latencia no se diluye con `/health`; `ask_requests` muestra la base del cálculo | `app/metrics.py` |
+
+Nota: `latency_ms` cambió de significado respecto de la sesión 2 (antes contaba todas las
+peticiones; ahora solo `POST /ask`). Está registrado en `README.md`.
