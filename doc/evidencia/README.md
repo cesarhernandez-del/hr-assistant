@@ -82,3 +82,30 @@ Los controles, su código y su prueba están en `doc/compliance-checklist.md`.
 - Con ráfagas grandes, el p95 supera el SLO (5.9 s con 35 simultáneas). `/metrics` lo reporta con `slo.met: false`.
 - El modelo de 8B se equivoca con contexto largo o con listas largas. El revisor lo detecta, pero una sola
   corrección no siempre alcanza.
+
+
+## Despliegue en Render
+
+El servicio se define como Blueprint en `render.yaml`: contenedor Docker, plan gratuito, health check en `/health`
+y `autoDeployTrigger: checksPass`, así que Render solo despliega `main` cuando las cuatro etapas del CI pasan.
+
+1. En Render: New > Blueprint, conecta el repositorio y elige `main`.
+2. Escribe en Render > Environment los secretos marcados con `sync: false` en `render.yaml`: `API_KEYS`,
+   `CF_ACCOUNT_ID` y `CF_API_TOKEN`. Nunca van en el repositorio ni en el chat.
+3. Agrega a mano los valores de producción que no están en `render.yaml`:
+
+   | Variable | Valor | Por qué |
+   | --- | --- | --- |
+   | `SLO_P95_MS` | `3500` | ADR 0017 |
+   | `CACHE_TTL_SECONDS` | `3600` | Caché de AI Gateway; con 0 queda apagada |
+   | `LANGSMITH_TRACING` | `true` | Trazas por agente |
+   | `LANGSMITH_API_KEY` | (secreto) | Clave de LangSmith |
+
+4. Espera a que el servicio quede Live y comprueba con la prueba de humo de la fábrica:
+   `uv run python -m verification production <url>`, con `SMOKE_API_KEY` definida en la terminal.
+
+Con `ENVIRONMENT=production`, si falta un secreto o una regla de compliance no se cumple, el producto no arranca y
+el log de Render dice qué regla falló. Los valores del paso 3 viven solo en Render: si el Blueprint se crea de
+nuevo, hay que volver a escribirlos.
+
+La evidencia de producción (pruebas de carga, trazas, métricas, costos y seguridad) está en `doc/evidencia/`.
