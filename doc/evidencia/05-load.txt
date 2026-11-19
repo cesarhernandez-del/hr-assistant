@@ -1,0 +1,6 @@
+Peticiones: 20 con concurrencia 5
+Códigos: 200=20
+Latencia de las 200 (ms): p50=1321 p95=2967 máx=3076
+Peticiones: 35 con concurrencia 35
+Códigos: 200=29, 429=6
+Latencia de las 200 (ms): p50=4786 p95=5868 máx=6449

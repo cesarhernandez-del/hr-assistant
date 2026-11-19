@@ -1,0 +1,26 @@
+{
+    "answer": "Jorge Díaz es el Líder técnico de la empresa desde el 10 de enero de 2022 y trabaja en el departamento de Tecnología.",
+    "steps": 2,
+    "tools_used": [
+        "get_employee"
+    ],
+    "input_tokens": 938,
+    "output_tokens": 78,
+    "stopped": "answer",
+    "intent": "directory",
+    "agents_used": [
+        "classifier",
+        "directory",
+        "reviewer"
+    ],
+    "review_retries": 0,
+    "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "route": "simple",
+    "pii_detected": [
+        "email"
+    ],
+    "fallback": false,
+    "cost_usd": 7.2162e-05,
+    "cached_calls": 0,
+    "request_id": "7fccffe4-b892-41de-9251-4fc1d4d36e65"
+}

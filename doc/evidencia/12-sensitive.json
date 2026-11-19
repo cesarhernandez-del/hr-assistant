@@ -1,0 +1,20 @@
+{
+    "steps": 0,
+    "tools_used": [],
+    "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "route": "no_directory",
+    "stopped": "not_run",
+    "intent": "sensitive",
+    "agents_used": [
+        "classifier"
+    ],
+    "review_retries": 0,
+    "answer": "Esa información no está disponible en este asistente.",
+    "pii_detected": [],
+    "fallback": false,
+    "cost_usd": 1.0452e-05,
+    "input_tokens": 164,
+    "output_tokens": 8,
+    "cached_calls": 0,
+    "request_id": "49cb32ac-e7ac-4771-a6dc-fc9cba0a41d2"
+}
