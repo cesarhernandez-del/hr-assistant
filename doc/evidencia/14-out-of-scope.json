@@ -1,0 +1,20 @@
+{
+    "steps": 0,
+    "tools_used": [],
+    "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "route": "no_directory",
+    "stopped": "not_run",
+    "intent": "out_of_scope",
+    "agents_used": [
+        "classifier"
+    ],
+    "review_retries": 0,
+    "answer": "Solo puedo responder preguntas sobre el directorio de empleados.",
+    "pii_detected": [],
+    "fallback": false,
+    "cost_usd": 1.0746e-05,
+    "input_tokens": 162,
+    "output_tokens": 9,
+    "cached_calls": 0,
+    "request_id": "2f723614-aa20-4eca-87ff-f22baf125c16"
+}

@@ -1,0 +1,31 @@
+{
+    "pid": 7,
+    "intents": {
+        "directory": 2,
+        "out_of_scope": 1,
+        "sensitive": 2
+    },
+    "pii_masked": 1,
+    "injections_blocked": 1,
+    "fallbacks": 0,
+    "cache_hit_rate": 0.0,
+    "cost_by_client": {
+        "hr-portal": 0.000289914
+    },
+    "requests": 25,
+    "ask_requests": 5,
+    "error_rate": 0.0,
+    "latency_ms": {
+        "p50": 296.6848164796829,
+        "p95": 4043.6405427753925
+    },
+    "tokens": {
+        "input": 4130,
+        "output": 271
+    },
+    "cost_usd": 0.000289914,
+    "slo": {
+        "p95_ms_target": 3500,
+        "met": false
+    }
+}

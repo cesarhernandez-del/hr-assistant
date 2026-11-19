@@ -1,0 +1,13 @@
+HTTP/2 429 
+date: Thu, 19 Nov 2026 05:05:02 GMT
+content-type: application/json
+cf-cache-status: DYNAMIC
+retry-after: 52
+rndr-id: d56dcd8b-a35a-47ea
+server: cloudflare
+vary: Accept-Encoding
+x-render-origin-server: uvicorn
+x-request-id: c0ae9985-41f2-4a92-bb81-a6799f7129df
+cf-ray: a5ccad755a553449-DFW
+alt-svc: h3=":443"; ma=86400
+
